@@ -191,6 +191,13 @@ class App:
         if result['name'] in self.ingredientDict:
             temp = self.ingredientDict[result['name']].copy()
             temp['name'] = result['name']
+            
+            # close modal    
+            modal.find_element(By.XPATH, '//*[@id="materialViewModal"]/div/div/div[1]/button').click()
+            
+            WebDriverWait(self.driver, 20).until(
+                EC.invisibility_of_element_located((By.XPATH, '//*[@id="materialViewModal"]'))
+            )
             return temp
 
         self.ingredientDict['count'] += 1
