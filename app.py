@@ -1,4 +1,3 @@
-from inspect import trace
 import re
 import json
 import os
@@ -10,32 +9,42 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
 class App:
-    def __init__(self, driverPath, load=False, debug=False):
+    def __init__(self, driverPath, load=False, debug=False, startPage = 1):
         self.receipeUrl = "https://www.10000recipe.com/recipe/list.html"
         self.driver = webdriver.Chrome(driverPath)
-        self.currentReceipePage = 0
+        self.currentReceipePage = startPage - 1
         self.ingredientDict = {'count': 0}
         self.receipeDict = {}
+        self.tempReceipeDict = {}
         self.diffFormatList = []
-        self.saveDirectory = './results'
+        self.saveDirectory = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'results')
         self.startTime = ''
 
         self.debug = debug
 
         if load is True:
-            self.loadReceipeDict(self.saveDirectory)
-            self.loadIngredientDict(self.saveDirectory)
-            self.loadDiffFormatList(self.saveDirectory)
+            self.receipeDict = self.loadJson('receipe.json')
+            self.tempReceipeDict = self.loadJson('temp.json')
+            self.ingredientDict = self.loadJson('ingredient.json')
+            self.diffFormatList = self.loadJson('diff_format.json')
 
     def run(self):
-        directory = createFolder(self.saveDirectory)
+        self.startTime = datetime.now().strftime("%Y%m%d_%Hh%Mm%Ss")
+
+        directory = createFolder(os.path.join(self.saveDirectory, self.startTime))
         if directory is None:
             print("디렉토리 생성 실패로 인해 프로그램을 종료합니다.")
             return
 
-        self.startTime = datetime.now().strftime("%Y%m%d_%Hh%Mm%Ss")
-        receipeFilePath = directory + "/receipe_" + self.startTime + ".json"
-        ingredientFilePath = directory + "/ingredient_" + self.startTime + ".json"
+        # 불러온 파일 새로 저장
+        self.saveJson('receipe.json', self.receipeDict)
+        self.saveJson('temp.json', self.tempReceipeDict)
+        self.saveJson('ingredient.json', self.ingredientDict)
+        self.saveJson('diff_format.json', self.diffFormatList)
+            
+        # receipeFilePath = os.path.join(directory, "/receipe.json")
+        # tempReceipeFilePath = os.path.join(directory, "/temp.json")
+        # ingredientFilePath = os.path.join(directory, "/ingredient.json")
         
         while True:
             self.nextReceipePage()
@@ -52,13 +61,16 @@ class App:
                     continue
 
                 title = receipe['title']
-                del receipe['title']
-                self.receipeDict[title] = receipe
+
+                if self.isTempType(receipe) == True:
+                    self.tempReceipeDict[title] = receipe
+                else:
+                    self.receipeDict[title] = receipe
 
                 # save
-                self.saveReceipeDict(receipeFilePath)
-                self.saveIngredientDict(ingredientFilePath)
-
+                self.saveJson('receipe.json', self.receipeDict)
+                self.saveJson('temp.json', self.tempReceipeDict)
+                self.saveJson('ingredient.json', self.ingredientDict)
         
 
     def getReceipe(self, receipeElement):
@@ -70,7 +82,7 @@ class App:
 
         # get title
         title = receipeElement.find_element(By.CSS_SELECTOR, 'div.common_sp_caption_tit').text
-        if (title in self.receipeDict) or (url in self.diffFormatList):
+        if (title in self.receipeDict) or (url in self.diffFormatList) or (title in self.tempReceipeDict):
             print("이미 크롤링한 레시피이므로 패스")
             return None
 
@@ -88,14 +100,13 @@ class App:
             # 다른 포맷 url 저장
             if url not in self.diffFormatList:
                 self.diffFormatList.append(url)
-                diffFormatFilePath = self.saveDirectory + "/diff_format_" + self.startTime + ".json"
-                self.saveDiffFormatList(diffFormatFilePath)
+                self.saveJson('diff_format.json', self.diffFormatList)
 
             return None
 
         result['title'] = title
-        # result['url'] = self.driver.current_url
         result['url'] = url
+        result['image'] = self.driver.find_element(By.XPATH, '//*[@id="main_thumbs"]').get_attribute('src')
 
         if self.debug is True:
             print('레시피 제목 : ' + result['title'])
@@ -104,12 +115,16 @@ class App:
         result['step'] = []
         receipeSteps = self.driver.find_elements(By.CSS_SELECTOR, 'div.view_step_cont')
         for receipeStep in receipeSteps:
+            temp = []
             content = receipeStep.find_element(By.CSS_SELECTOR, 'div.media-body').text
-            imgUrl = receipeStep.find_element(By.CSS_SELECTOR, 'div.media-right > img').get_attribute('src')
-            result['step'].append([content, imgUrl])
-
+            temp.append(content)
+            imgs = receipeStep.find_elements(By.CSS_SELECTOR, 'div.media-right img')
+            for img in imgs:
+                temp.append(img.get_attribute('src'))
+            result['step'].append(temp)
+            
             if self.debug is True:
-                print(content, imgUrl, end='\n\n')
+                print(temp, end='\n\n')
 
         # get ingredient
         result['ingredient'] = self.getIngredient(ingredientContainer)
@@ -121,7 +136,7 @@ class App:
 
     def getIngredient(self, element):
         # get ingredient
-        result = {}
+        result = []
         ingredientList = element.find_elements(By.TAG_NAME, 'ul')
         
         if self.debug is True:
@@ -134,7 +149,6 @@ class App:
             if self.debug is True:
                 print('\t재료 그룹 : ' + subtitle)
 
-            result[subtitle] = []
 
             subList = i.find_elements(By.TAG_NAME, 'li')
             for j in subList:
@@ -143,24 +157,23 @@ class App:
                     # 재료 상세 정보 저장
                     ingredientDetail = self.getIngredientDetail(ingreDientElement)
                     name = ingredientDetail['name']
-                    del ingredientDetail['name']
                     self.ingredientDict[name] = ingredientDetail
 
                     ingredient = ingreDientElement.text
 
                     unit = j.find_element(By.TAG_NAME, 'span').text
-                    result[subtitle].append({
+                    result.append({
                         'id': ingredientDetail['id'],
-                        'name': ingredient,
+                        'name': ingredient.replace('\n', ''),
                         'unit': unit
                     })
 
                 except:
                     ingredient = j.text
                     unit = j.find_element(By.TAG_NAME, 'span').text
-                    result[subtitle].append({
+                    result.append({
                         'id': -1,
-                        'name': ingredient.replace(unit, ''),
+                        'name': ingredient.replace(unit, '').replace('\n', ''),
                         'unit': unit
                     })
 
@@ -203,6 +216,14 @@ class App:
         self.ingredientDict['count'] += 1
         result['id'] = self.ingredientDict['count']
 
+        # get image
+        try:
+            imageElement = modal.find_element(By.XPATH, '//*[@id="materialBody"]/div/div[1]/div[1][@class="ingredient_pic"]')
+            imageUrl = re.split('[()]', imageElement.value_of_css_property('background-image'))[1]
+            result['image'] = imageUrl.replace('"', '')
+        except:
+            result['image'] = ''
+
         # get info
         if self.debug is True:
             print('\t\t재료 정보 >>')
@@ -239,6 +260,11 @@ class App:
 
         return result
 
+    def isTempType(self, receipe):
+        for ingredient in receipe['ingredient']:
+            if ingredient['id'] == -1:
+                return True
+        return False
 
     
     def goReceipePage(self, page: int):
@@ -257,41 +283,14 @@ class App:
         receipeListContainer = self.driver.find_element(By.XPATH, '//*[@id="contents_area_full"]/ul/ul')
         return receipeListContainer.find_elements(By.TAG_NAME, 'li')
 
-    def saveReceipeDict(self, filePath):
-        with open(filePath, 'w', encoding='utf8') as jsonFile:
-            json.dump(self.receipeDict, jsonFile, indent="\t", ensure_ascii=False)
+    def saveJson(self, filename, content):
+        with open(os.path.join(self.saveDirectory, self.startTime, filename), 'w', encoding='utf8') as jsonFile:
+            json.dump(content, jsonFile, indent="\t", ensure_ascii=False)
 
-    def loadReceipeDict(self, saveDirectory):
-        file_list = os.listdir(saveDirectory)
-        file_list_receipe = [file for file in file_list if file.startswith("receipe")]
-        last_receipe_file = file_list_receipe[-1]
-        
-        with open(saveDirectory + "/" + last_receipe_file, 'r', encoding='utf8') as f:
-            self.receipeDict = json.load(f)
-            
-    def saveIngredientDict(self, filePath):
-        with open(filePath, 'w', encoding='utf8') as jsonFile:
-            json.dump(self.ingredientDict, jsonFile, indent="\t", ensure_ascii=False)
-
-    def loadIngredientDict(self, saveDirectory):
-        file_list = os.listdir(saveDirectory)
-        file_list_ingredient = [file for file in file_list if file.startswith("ingredient")]
-        last_ingredient_file = file_list_ingredient[-1]
-
-        with open(saveDirectory + "/" + last_ingredient_file, 'r', encoding='utf8') as f:
-            self.ingredientDict = json.load(f)
-
-    def saveDiffFormatList(self, filePath):
-        with open(filePath, 'w', encoding='utf8') as jsonFile:
-            json.dump(self.diffFormatList, jsonFile, indent="\t", ensure_ascii=False)
-
-    def loadDiffFormatList(self, saveDirectory):
-        file_list = os.listdir(saveDirectory)
-        file_list_diff = [file for file in file_list if file.startswith("diff_format")]
-        last_diff_file = file_list_diff[-1]
-
-        with open(saveDirectory + "/" + last_diff_file, 'r', encoding='utf8') as f:
-            self.diffFormatList = json.load(f)
+    def loadJson(self, filename):
+        last_directory = os.listdir(self.saveDirectory)[-1]
+        with open(os.path.join(self.saveDirectory, last_directory, filename), 'r', encoding='utf8') as f:
+            return json.load(f)
 
 def createFolder(path):
     import os
